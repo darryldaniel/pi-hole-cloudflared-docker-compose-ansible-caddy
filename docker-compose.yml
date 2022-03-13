@@ -7,16 +7,18 @@ services:
     # Cloudflared doesn't have an armvf image, so we build from source
     build: https://github.com/cloudflare/cloudflared.git
     command: proxy-dns
+    secrets:
+      - cloudflare_gateway
     environment:
       # Replace with your Cloudflare Gateway domain or a public DNS over HTTPS server
-      TUNNEL_DNS_UPSTREAM: "https://XXX.cloudflare-gateway.com/dns-query"
-      TUNNEL_DNS_BOOTSTRAP: "https://1.1.1.2/dns-query"
+      TUNNEL_DNS_UPSTREAM: "https://5l8yf3htzx.cloudflare-gateway.com/dns-query"
+      TUNNEL_DNS_BOOTSTRAP: "https://1.1.1.3/dns-query"
       TUNNEL_DNS_ADDRESS: "0.0.0.0"
       TUNNEL_DNS_PORT: "53"
 
     # I'm pretty sure cloudflared doesn't use the bootstrap server, so we define it here too
     dns:
-      - 1.1.1.2
+      - 1.1.1.3
       - 1.1.0.2
     networks:
       net:
@@ -24,15 +26,43 @@ services:
     healthcheck:
       test: ["CMD", "cloudflared", "version"]
 
+  traefik:
+    image: "traefik:v2.5"
+    container_name: "traefik"
+    labels:
+      - "traefik.docker.network=web"
+    command:
+      #- "--log.level=DEBUG"
+      - "--api.insecure=true"
+      - "--providers.docker=true"
+      - "--providers.docker.exposedbydefault=false"
+      - "--entrypoints.web.address=:80"
+    ports:
+      - "80:80"
+      - "8080:8080"
+    volumes:
+      - "/var/run/docker.sock:/var/run/docker.sock:ro"
+    depends_on:
+      - cloudflared
+    networks:
+      net:
+        ipv4_address: 10.0.0.4
+
   pihole:
     container_name: pihole
     restart: unless-stopped
     image: pihole/pihole
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.pihole.rule=Host(`traefik.pihole`)"
+      - "traefik.http.routers.pihole.entrypoints=web"
+      - "traefik.http.services.pihole.loadbalancer.server.port=80"
+      - "traefik.docker.network=web"
     secrets:
       - pihole_web_password
-    environment: 
+    environment:
       # Replace with your desired configuration
-      TZ: America/New_York
+      TZ: Africa/Johannesburg
       DNSSEC: "true"
       DNS_BOGUS_PRIV: "true"
       DNS_FQDN_REQUIRED: "true"
@@ -43,7 +73,7 @@ services:
       REV_SERVER_TARGET: "192.168.1.1"
       REV_SERVER_CIDR: "192.168.0.0/16"
       VIRTUAL_HOST: dns.example.com
-    ports: 
+    ports:
       - "53:53/tcp"
       - "53:53/udp"
     volumes:
@@ -58,35 +88,6 @@ services:
       - cloudflared
     healthcheck:
       test: ["CMD", "dig", "+norecurse", "+retry=0", "@127.0.0.1", "pi.hole"]
-  caddy:
-    build:
-      context: .
-      dockerfile: caddy.Dockerfile
-    container_name: caddy
-    restart: unless-stopped
-    ports:
-      - "80:80" # For HTTP -> HTTPS redirects
-      - "443:443"
-    volumes:
-      - $PWD/Caddyfile:/etc/caddy/Caddyfile
-      - caddy_data:/data
-      - caddy_config:/config
-    env_file:
-      - .caddy.env
-    dns:
-      - 1.0.0.3
-    healthcheck:
-        test: ["CMD", "caddy", "version"]
-    depends_on:
-      - pihole
-      - cloudflared
-    networks:
-      net: {}
-
-volumes:
-  caddy_data:
-    external: true
-  caddy_config:
 
 networks:
   net:
@@ -97,5 +98,7 @@ networks:
 
 # PiHole Web password lives in a .pihole_web_password to keep it out of the config
 secrets:
-  pihole_web_password: 
+  pihole_web_password:
     file: .pihole_web_password
+  cloudflare_gateway:
+    file: .cloudflare_gateway
